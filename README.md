@@ -1,12 +1,7 @@
 # PlanMode
 
-## Install
+## Usage
 
 ```bash
-uv tool install .
+REPOS="/path/to/repo1:/path/to/repo2" uv run planmode.py
 ```
-
-## Aliases
-
-- `planmode` - Main command
-- `pm` - Short form

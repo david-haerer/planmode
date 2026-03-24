@@ -5,12 +5,19 @@ import typer
 import fasthtml.common as fh
 import os
 
-
 pm = typer.Typer()
 
-app, rt = fh.fast_app()
+app, rt = fh.fast_app(live=True, debug=True)
 
-REPO: Path = Path(os.environ.get("PLANMODE_REPO", "."))
+
+def slug(txt: str) -> str:
+    return txt.lower().replace(" ", "-").replace(".", "")
+
+
+REPOS: dict[str, Path] = {
+    slug((path / "index.md").read_text().split("\n")[0][2:]): path
+    for path in map(Path, os.getenv("REPOS", "").split(":"))
+}
 
 
 def md_section(md: str, head: str) -> str:
@@ -60,6 +67,7 @@ class Item(BaseModel):
 
 
 class Plan(BaseModel):
+    repo: str
     path: Path
     name: str
     goals: list[Item] = Field(default_factory=list)
@@ -83,17 +91,19 @@ class Plan(BaseModel):
         ])
 
     @classmethod
-    def from_path(cls, path: Path) -> Plan:
+    def from_path(cls, repo: str, subpath: Path) -> Plan:
+        path = REPOS[repo] / subpath if subpath else REPOS[repo]
         if path.is_file():
-            return Plan.from_md(path.read_text(), path.relative_to(REPO))
+            return Plan.from_md(path.read_text(), repo, subpath)
         index_md = path / "index.md"
-        assert index_md.is_file(), (
-            f"Index file is missing! {index_md.relative_to(REPO)}"
-        )
-        plan = Plan.from_md(index_md.read_text(), index_md.relative_to(REPO))
-        plan.plans = [Plan.from_path(d) for d in path.iterdir() if d.is_dir()]
+        plan = Plan.from_md(index_md.read_text(), repo, subpath)
+        plan.plans = [
+            Plan.from_path(repo, d.relative_to(REPOS[repo]))
+            for d in path.iterdir()
+            if d.is_dir()
+        ]
         plan.plans += [
-            Plan.from_md(f.read_text(), f.relative_to(REPO))
+            Plan.from_md(f.read_text(), repo, f.relative_to(REPOS[repo]))
             for f in path.iterdir()
             if f.is_file() and f.name != "index.md"
         ]
@@ -101,16 +111,12 @@ class Plan(BaseModel):
         return plan
 
     @classmethod
-    def from_md(cls, md: str, path: Path) -> Plan:
-        # Assert sections are present.
-        assert "## Goals\n" in md, f"Section '## Goals' missing! {path}"
-        assert "## Status\n" in md, f"Section '## Status' missing! {path}"
-        assert "## Problems\n" in md, f"Section '## Problems' missing! {path}"
-        assert "## Tasks\n" in md, f"Section '## Tasks' missing! {path}"
-
+    def from_md(cls, md: str, repo: str, path: Path) -> Plan:
         # Determine project name.
         md = md.strip()
-        assert md.startswith("# "), f"Unable to determine project name! {path}"
+        assert md.startswith("# "), (
+            f"Unable to determine project name! {repo=}, {path=}"
+        )
         name, md = md[2:].split("\n", maxsplit=1)
 
         # Determine project goals.
@@ -130,7 +136,8 @@ class Plan(BaseModel):
         tasks = Item.from_md(md_tasks)
 
         return Plan(
-            path=path if path.name != "index.md" else path.parent,
+            repo=repo,
+            path=path,
             name=name,
             goals=goals,
             status=status,
@@ -140,7 +147,7 @@ class Plan(BaseModel):
 
 
 @pm.command()
-def serve():
+def serve(paths: list[Path] = typer.Argument(default_factory=list)):
     fh.serve()
 
 
@@ -170,29 +177,24 @@ def body(*args, current="/"):
 def get():
     def Plans(plans: list[Plan]):
         return fh.Ul(
-            fh.Li(fh.A(p.name, href=f"/plans/{p.path}"), Plans(p.plans)) for p in plans
+            fh.Li(fh.A(p.name, href=f"/plans/{p.repo}/{p.path}"), Plans(p.plans))
+            for p in plans
         )
 
-    try:
-        plan = Plan.from_path(REPO)
-    except Exception as error:
-        return error
-    return body(fh.H1("PlanMode"), Plans([plan]), current="/")
+    plans = [Plan.from_path(name, Path(".")) for name, path in REPOS.items()]
+    return body(fh.H1("PlanMode"), Plans(plans), current="/")
 
 
 def render_items(items: list[Item]):
     return fh.Ul(fh.Li(i.name, render_items(i.items)) for i in items)
 
 
-@rt("/plans/{filepath:path}")
-def get(filepath: Path):
+@rt("/plans/{name:str}/{filepath:path}")
+def get(name: str, filepath: Path):
     def Section(title: str, items: list[Item]):
         return fh.Section(fh.H2(title), render_items(items))
 
-    try:
-        plan = Plan.from_path(REPO / filepath)
-    except Exception as error:
-        return error
+    plan = Plan.from_path(name, filepath)
     return body(
         fh.H1(plan.name),
         Section("Goals", plan.goals),
@@ -207,8 +209,8 @@ def get(filepath: Path):
     )
 
 
-@rt("/{section:str}/{filepath:path}")
-def get(section: str, filepath: Path):
+@rt("/{section:str}/{repo:str}/{filepath:path}")
+def get(section: str, repo: str, filepath: Path):
     def Section(plan: Plan, attr, index=0):
         h = [fh.H1, fh.H3, fh.H4, fh.H5, fh.H6][index]
         return fh.Section(
@@ -220,7 +222,7 @@ def get(section: str, filepath: Path):
         )
 
     try:
-        plan = Plan.from_path(REPO / filepath)
+        plan = Plan.from_path(repo, filepath)
     except Exception as error:
         return error
     return body(Section(plan, section), current=f"/{section}")
