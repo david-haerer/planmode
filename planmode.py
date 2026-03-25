@@ -1,13 +1,8 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from pathlib import Path
-import typer
 import fasthtml.common as fh
 import os
-
-pm = typer.Typer()
-
-app, rt = fh.fast_app(live=True, debug=True)
 
 
 def slug(txt: str) -> str:
@@ -25,6 +20,8 @@ TITLE = {
     "problems": "Problems",
     "tasks": "Tasks",
 }
+
+app, rt = fh.fast_app(live=True, debug=True)
 
 
 def md_section(md: str, head: str) -> str:
@@ -151,11 +148,6 @@ class Plan(BaseModel):
             problems=problems,
             tasks=tasks,
         )
-
-
-@pm.command()
-def serve(paths: list[Path] = typer.Argument(default_factory=list)):
-    fh.serve(port=80)
 
 
 def body(*args, current_path="/", current_view=""):
@@ -285,4 +277,4 @@ def get(repo: str, path: Path, view: str = "plan"):
 
 
 if __name__ == "__main__":
-    pm()
+    fh.serve(port=80)
