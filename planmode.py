@@ -148,84 +148,96 @@ class Plan(BaseModel):
 
 @pm.command()
 def serve(paths: list[Path] = typer.Argument(default_factory=list)):
-    fh.serve()
+    fh.serve(port=80)
 
 
-def body(*args, current="/"):
+def body(*args, current_path="/", current_view=""):
     items = [
-        ("Index", "/"),
-        ("Plans", "/plans"),
-        ("Goals", "/goals"),
-        ("Status", "/status"),
-        ("Problems", "/problems"),
-        ("Tasks", "/tasks"),
+        ("Index", ""),
+        ("Plans", "plan"),
+        ("Goals", "goals"),
+        ("Status", "status"),
+        ("Problems", "problems"),
+        ("Tasks", "tasks"),
     ]
 
-    def link(label, href):
-        attrs = {"aria-current": "page"} if current == href else {}
-        return fh.Li(fh.A(label, href=href, **attrs))
+    def link(label, view):
+        if current_view == view:
+            return fh.Li(label)
+        href = "/" if view == "" else f"{current_path}?view={view}"
+        return fh.Li(fh.A(label, href=href))
 
     return fh.Body(
         fh.Nav(
-            fh.Ul(*[link(label, href) for label, href in items]),
+            fh.Ul(*[link(label, foo) for label, foo in items]),
         ),
         fh.Main(*args),
     )
-
-
-@rt("/")
-def get():
-    def Plans(plans: list[Plan]):
-        return fh.Ul(
-            fh.Li(fh.A(p.name, href=f"/plans/{p.repo}/{p.path}"), Plans(p.plans))
-            for p in plans
-        )
-
-    plans = [Plan.from_path(name, Path(".")) for name, path in REPOS.items()]
-    return body(fh.H1("PlanMode"), Plans(plans), current="/")
 
 
 def render_items(items: list[Item]):
     return fh.Ul(fh.Li(i.name, render_items(i.items)) for i in items)
 
 
-@rt("/plans/{name:str}/{filepath:path}")
-def get(name: str, filepath: Path):
+def view_plan(repo, path):
     def Section(title: str, items: list[Item]):
         return fh.Section(fh.H2(title), render_items(items))
 
-    plan = Plan.from_path(name, filepath)
+    plan = Plan.from_path(repo, path)
     return body(
         fh.H1(plan.name),
         Section("Goals", plan.goals),
         fh.Section(
             fh.H2("Plans"),
-            fh.Ul(fh.Li(fh.A(p.name, href=f"/plans/{p.path}")) for p in plan.plans),
+            fh.Ul(fh.Li(fh.A(p.name, href=f"/{p.repo}/{p.path}")) for p in plan.plans),
         ),
         Section("Status", plan.status),
         Section("Problems", plan.problems),
         Section("Tasks", plan.tasks),
-        current="/plans",
+        current_path=f"/{repo}/{path}",
+        current_view="plan",
     )
 
 
-@rt("/{section:str}/{repo:str}/{filepath:path}")
-def get(section: str, repo: str, filepath: Path):
-    def Section(plan: Plan, attr, index=0):
+def view_section(repo, path, view):
+    def Section(plan: Plan, section, index=0):
         h = [fh.H1, fh.H3, fh.H4, fh.H5, fh.H6][index]
         return fh.Section(
             h(plan.name),
             render_items(
-                getattr(plan, attr),
+                getattr(plan, section),
             ),
-            *[Section(p, attr, index + 1) for p in plan.plans],
+            *[Section(p, section, index + 1) for p in plan.plans],
         )
 
-    try:
-        plan = Plan.from_path(repo, filepath)
-    except Exception as error:
-        return error
-    return body(Section(plan, section), current=f"/{section}")
+    plan = Plan.from_path(repo, path)
+    return body(
+        Section(plan, view), current_path=f"/{repo}/{path}", current_view=f"{view}"
+    )
+
+
+def view_index():
+    def Plans(plans: list[Plan]):
+        return fh.Ul(
+            fh.Li(fh.A(p.name, href=f"/{p.repo}/{p.path}"), Plans(p.plans))
+            for p in plans
+        )
+
+    plans = [Plan.from_path(name, Path(".")) for name, path in REPOS.items()]
+    return body(Plans(plans), current_path="/", current_view="")
+
+
+@rt("/")
+def get(view: str = ""):
+    return view_index()
+
+
+@rt("/{repo:str}/{path:path}")
+def get(repo: str, path: Path, view: str = "plan"):
+    if view == "plan":
+        return view_plan(repo, path)
+    if view in ("goals", "status", "problems", "tasks"):
+        return view_section(repo, path, view)
 
 
 if __name__ == "__main__":
