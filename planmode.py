@@ -19,6 +19,13 @@ REPOS: dict[str, Path] = {
     for path in map(Path, os.getenv("REPOS", "").split(":"))
 }
 
+TITLE = {
+    "goals": "Goals",
+    "status": "Status",
+    "problems": "Problems",
+    "tasks": "Tasks",
+}
+
 
 def md_section(md: str, head: str) -> str:
     h = head.split(" ")[0]
@@ -154,11 +161,12 @@ def serve(paths: list[Path] = typer.Argument(default_factory=list)):
 def body(*args, current_path="/", current_view=""):
     items = [
         ("Index", ""),
-        ("Plans", "plan"),
+        ("Plan", "plan"),
         ("Goals", "goals"),
         ("Status", "status"),
         ("Problems", "problems"),
         ("Tasks", "tasks"),
+        ("All", "all"),
     ]
 
     def link(label, view):
@@ -168,10 +176,13 @@ def body(*args, current_path="/", current_view=""):
         return fh.Li(fh.A(label, href=href))
 
     return fh.Body(
-        fh.Nav(
-            fh.Ul(*[link(label, foo) for label, foo in items]),
+        fh.Style("html { scrollbar-gutter: stable; }"),
+        fh.Container(
+            fh.Nav(
+                fh.Ul(*[link(label, foo) for label, foo in items]),
+            ),
+            fh.Main(*args),
         ),
-        fh.Main(*args),
     )
 
 
@@ -199,20 +210,49 @@ def view_plan(repo, path):
     )
 
 
-def view_section(repo, path, view):
-    def Section(plan: Plan, section, index=0):
-        h = [fh.H1, fh.H3, fh.H4, fh.H5, fh.H6][index]
-        return fh.Section(
-            h(plan.name),
-            render_items(
-                getattr(plan, section),
-            ),
-            *[Section(p, section, index + 1) for p in plan.plans],
+def render_section(repo: str, current_path: Path, plan: Plan, section, index=0):
+    h = (
+        [fh.H3, fh.H4, fh.H5, fh.H6][index](
+            fh.A(plan.name, href=f"/{repo}/{plan.path}?view=plan")
         )
+        if plan.path != current_path
+        else None
+    )
+    return fh.Section(
+        h,
+        render_items(
+            getattr(plan, section),
+        ),
+        *[
+            render_section(repo, current_path, p, section, index + 1)
+            for p in plan.plans
+        ],
+    )
+
+
+def view_section(repo, path, view):
+    plan = Plan.from_path(repo, path)
+    return body(
+        fh.H1(f"{plan.name}: {TITLE[view]}"),
+        render_section(repo, path, plan, view),
+        current_path=f"/{repo}/{path}",
+        current_view=f"{view}",
+    )
+
+
+def view_all(repo, path):
+    def Section(title: str, section: str):
+        return fh.Section(fh.H2(title), render_section(repo, path, plan, section))
 
     plan = Plan.from_path(repo, path)
     return body(
-        Section(plan, view), current_path=f"/{repo}/{path}", current_view=f"{view}"
+        fh.H1(plan.name),
+        Section("Goals", "goals"),
+        Section("Status", "status"),
+        Section("Problems", "problems"),
+        Section("Tasks", "tasks"),
+        current_path=f"/{repo}/{path}",
+        current_view="all",
     )
 
 
@@ -224,7 +264,9 @@ def view_index():
         )
 
     plans = [Plan.from_path(name, Path(".")) for name, path in REPOS.items()]
-    return body(Plans(plans), current_path="/", current_view="")
+    return fh.Container(
+        fh.H1("PlanMode"), Plans(plans), current_path="/", current_view=""
+    )
 
 
 @rt("/")
@@ -238,6 +280,8 @@ def get(repo: str, path: Path, view: str = "plan"):
         return view_plan(repo, path)
     if view in ("goals", "status", "problems", "tasks"):
         return view_section(repo, path, view)
+    if view == "all":
+        return view_all(repo, path)
 
 
 if __name__ == "__main__":
