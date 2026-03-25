@@ -21,7 +21,12 @@ TITLE = {
     "tasks": "Tasks",
 }
 
-app, rt = fh.fast_app(live=True, debug=True)
+hdrs = (
+    fh.MarkdownJS(),
+    fh.HighlightJS(langs=["python", "javascript", "html", "css"]),
+)
+
+app, rt = fh.fast_app(hdrs=hdrs, live=True, debug=True)
 
 
 def md_section(md: str, head: str) -> str:
@@ -151,27 +156,18 @@ class Plan(BaseModel):
 
 
 def body(*args, current_path="/", current_view=""):
-    items = [
-        ("Index", ""),
-        ("Plan", "plan"),
-        ("Goals", "goals"),
-        ("Status", "status"),
-        ("Problems", "problems"),
-        ("Tasks", "tasks"),
-        ("All", "all"),
-    ]
-
-    def link(label, view):
-        if current_view == view:
-            return fh.Li(label)
-        href = "/" if view == "" else f"{current_path}?view={view}"
-        return fh.Li(fh.A(label, href=href))
-
     return fh.Body(
         fh.Style("html { scrollbar-gutter: stable; }"),
         fh.Container(
             fh.Nav(
-                fh.Ul(*[link(label, foo) for label, foo in items]),
+                fh.Ul(
+                    fh.Li(fh.A("/", href="/")),
+                    fh.Li(fh.A("..", href=f"{current_path}/..")),
+                    *[
+                        fh.Li(fh.A(p.name, href=f"/{p.repo}"))
+                        for p in [Plan.from_path(r, Path(".")) for r in REPOS]
+                    ],
+                )
             ),
             fh.Main(*args),
         ),
@@ -179,30 +175,42 @@ def body(*args, current_path="/", current_view=""):
 
 
 def render_items(items: list[Item]):
-    return fh.Ul(fh.Li(i.name, render_items(i.items)) for i in items)
+    def render(text):
+        foo, bar = " [http", "]"
+        if text.endswith(bar) and foo in text:
+            parts = text.split(foo)
+            url = foo[2:] + parts[1][:-1]
+            text = f"[{parts[0]}]({url})"
+        return fh.Span(text, cls="marked")
+
+    return fh.Ul(fh.Li(render(i.name), render_items(i.items)) for i in items)
 
 
 def view_plan(repo, path):
-    def Section(title: str, items: list[Item]):
-        return fh.Section(fh.H2(title), render_items(items))
+    def Section(section: str):
+        title = TITLE[section]
+        items = getattr(plan, section)
+        href = f"/{repo}/{path}?view={section}"
+        return fh.Section(fh.H2(fh.A(title, href=href)), render_items(items))
 
     plan = Plan.from_path(repo, path)
     return body(
-        fh.H1(plan.name),
-        Section("Goals", plan.goals),
+        fh.H1(fh.A(plan.name, href=f"/{repo}/{path}?view=all")),
         fh.Section(
-            fh.H2("Plans"),
-            fh.Ul(fh.Li(fh.A(p.name, href=f"/{p.repo}/{p.path}")) for p in plan.plans),
+            fh.Ul(fh.Li(fh.A(p.name, href=f"/{repo}/{path}")) for p in plan.plans),
         ),
-        Section("Status", plan.status),
-        Section("Problems", plan.problems),
-        Section("Tasks", plan.tasks),
+        Section("goals"),
+        Section("status"),
+        Section("problems"),
+        Section("tasks"),
         current_path=f"/{repo}/{path}",
         current_view="plan",
     )
 
 
 def render_section(repo: str, current_path: Path, plan: Plan, section, index=0):
+    if not plan.plans and not getattr(plan, section):
+        return None
     h = (
         [fh.H3, fh.H4, fh.H5, fh.H6][index](
             fh.A(plan.name, href=f"/{repo}/{plan.path}?view=plan")
@@ -225,7 +233,7 @@ def render_section(repo: str, current_path: Path, plan: Plan, section, index=0):
 def view_section(repo, path, view):
     plan = Plan.from_path(repo, path)
     return body(
-        fh.H1(f"{plan.name}: {TITLE[view]}"),
+        fh.H1(fh.A(plan.name, href=f"/{repo}/{path}"), fh.Small(f" [{TITLE[view]}]")),
         render_section(repo, path, plan, view),
         current_path=f"/{repo}/{path}",
         current_view=f"{view}",
@@ -233,16 +241,20 @@ def view_section(repo, path, view):
 
 
 def view_all(repo, path):
-    def Section(title: str, section: str):
-        return fh.Section(fh.H2(title), render_section(repo, path, plan, section))
+    def Section(section: str):
+        title = TITLE[section]
+        return fh.Section(
+            fh.H2(fh.A(title, href=f"/{repo}/{path}?view={section}")),
+            render_section(repo, path, plan, section),
+        )
 
     plan = Plan.from_path(repo, path)
     return body(
-        fh.H1(plan.name),
-        Section("Goals", "goals"),
-        Section("Status", "status"),
-        Section("Problems", "problems"),
-        Section("Tasks", "tasks"),
+        fh.H1(fh.A(plan.name, href=f"/{repo}/{path}?view=plan")),
+        Section("goals"),
+        Section("status"),
+        Section("problems"),
+        Section("tasks"),
         current_path=f"/{repo}/{path}",
         current_view="all",
     )
@@ -255,9 +267,17 @@ def view_index():
             for p in plans
         )
 
+    def Repo(plan):
+        return fh.Section(
+            fh.H2(fh.A(plan.name, href=f"/{plan.repo}")), Plans(plan.plans)
+        )
+
     plans = [Plan.from_path(name, Path(".")) for name, path in REPOS.items()]
     return fh.Container(
-        fh.H1("PlanMode"), Plans(plans), current_path="/", current_view=""
+        fh.H1("PlanMode"),
+        *[Repo(plan) for plan in plans],
+        current_path="/",
+        current_view="",
     )
 
 
