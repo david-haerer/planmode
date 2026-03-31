@@ -46,6 +46,7 @@ def md_section(md: str, head: str) -> str:
 
 
 class Item(BaseModel):
+    parent: Item | None
     name: str
     items: list[Item] = []
 
@@ -57,7 +58,7 @@ class Item(BaseModel):
         return "\n".join(lines)
 
     @classmethod
-    def from_md(cls, md: str) -> list[Item]:
+    def from_md(cls, md: str, parent: Item | None = None) -> list[Item]:
         md = md.strip()
         if not md:
             return []
@@ -68,14 +69,17 @@ class Item(BaseModel):
             parts = item_md.split("\n", maxsplit=1)
             name = parts[0]
             if len(parts) == 1:
-                items.append(Item(name=name, items=[]))
+                items.append(Item(parent=parent, name=name, items=[]))
                 continue
             items_md = "\n".join(line[2:] for line in parts[1].splitlines())
-            items.append(Item(name=name, items=Item.from_md(items_md)))
+            i = Item(parent=parent, name=name)
+            i.items = Item.from_md(items_md, parent=i)
+            items.append(i)
         return items
 
 
 class Plan(BaseModel):
+    parent: Plan | None
     repo: str
     path: Path
     name: str
@@ -145,6 +149,7 @@ class Plan(BaseModel):
         tasks = Item.from_md(md_tasks)
 
         return Plan(
+            parent=None,
             repo=repo,
             path=path,
             name=name,
@@ -186,81 +191,70 @@ def render_items(items: list[Item]):
     return fh.Ul(fh.Li(render(i.name), render_items(i.items)) for i in items)
 
 
-def view_plan(repo, path):
+@rt("/{repo:str}/{path:path}")
+def get(repo: str, path: Path, view: str | None = None):
+    plan = Plan.from_path(repo, path)
+
+    def render_section(repo: str, current_path: Path, plan: Plan, section, index=0):
+        if not plan.plans and not getattr(plan, section):
+            return None
+        h = (
+            [fh.H3, fh.H4, fh.H5, fh.H6][index](
+                fh.A(plan.name, href=f"/{repo}/{plan.path}?section=plan")
+            )
+            if plan.path != current_path
+            else None
+        )
+        return fh.Section(
+            h,
+            render_items(
+                getattr(plan, section),
+            ),
+            *[
+                render_section(repo, current_path, p, section, index + 1)
+                for p in plan.plans
+            ],
+        )
+
     def Section(section: str):
         title = TITLE[section]
         items = getattr(plan, section)
-        href = f"/{repo}/{path}?view={section}"
-        return fh.Section(fh.H2(fh.A(title, href=href)), render_items(items))
-
-    plan = Plan.from_path(repo, path)
-    return body(
-        fh.H1(fh.A(plan.name, href=f"/{repo}/{path}?view=all")),
-        fh.Section(
-            fh.Ul(fh.Li(fh.A(p.name, href=f"/{repo}/{path}")) for p in plan.plans),
-        ),
-        Section("goals"),
-        Section("status"),
-        Section("problems"),
-        Section("tasks"),
-        current_path=f"/{repo}/{path}",
-        current_view="plan",
-    )
-
-
-def render_section(repo: str, current_path: Path, plan: Plan, section, index=0):
-    if not plan.plans and not getattr(plan, section):
-        return None
-    h = (
-        [fh.H3, fh.H4, fh.H5, fh.H6][index](
-            fh.A(plan.name, href=f"/{repo}/{plan.path}?view=plan")
-        )
-        if plan.path != current_path
-        else None
-    )
-    return fh.Section(
-        h,
-        render_items(
-            getattr(plan, section),
-        ),
-        *[
-            render_section(repo, current_path, p, section, index + 1)
-            for p in plan.plans
-        ],
-    )
-
-
-def view_section(repo, path, view):
-    plan = Plan.from_path(repo, path)
-    return body(
-        fh.H1(fh.A(plan.name, href=f"/{repo}/{path}"), fh.Small(f" [{TITLE[view]}]")),
-        render_section(repo, path, plan, view),
-        current_path=f"/{repo}/{path}",
-        current_view=f"{view}",
-    )
-
-
-def view_all(repo, path):
-    def Section(section: str):
-        title = TITLE[section]
+        if section == view:
+            return fh.Section(
+                fh.H2(
+                    title,
+                    fh.Nbsp(),
+                    fh.A("[-]", href=f"/{repo}/{path}#{section}"),
+                    id=section,
+                ),
+                render_section(repo, path, plan, section),
+            )
         return fh.Section(
-            fh.H2(fh.A(title, href=f"/{repo}/{path}?view={section}")),
-            render_section(repo, path, plan, section),
+            fh.H2(
+                title,
+                fh.Nbsp(),
+                fh.A("[+]", href=f"/{repo}/{path}?view={section}#{section}"),
+                id=section,
+            ),
+            render_items(items),
         )
 
-    plan = Plan.from_path(repo, path)
     return body(
-        fh.H1(fh.A(plan.name, href=f"/{repo}/{path}?view=plan")),
+        fh.H1(plan.name),
+        fh.Section(
+            fh.Ul(fh.Li(fh.A(p.name, href=f"/{repo}/{p.path}")) for p in plan.plans),
+        ),
         Section("goals"),
         Section("status"),
         Section("problems"),
         Section("tasks"),
         current_path=f"/{repo}/{path}",
-        current_view="all",
+        current_view=view,
     )
 
 
-def view_index():
+@rt("/")
+def get(view: str = ""):
     def Plans(plans: list[Plan]):
         return fh.Ul(
             fh.Li(fh.A(p.name, href=f"/{p.repo}/{p.path}"), Plans(p.plans))
@@ -279,21 +273,6 @@ def view_index():
         current_path="/",
         current_view="",
     )
-
-
-@rt("/")
-def get(view: str = ""):
-    return view_index()
-
-
-@rt("/{repo:str}/{path:path}")
-def get(repo: str, path: Path, view: str = "plan"):
-    if view == "plan":
-        return view_plan(repo, path)
-    if view in ("goals", "status", "problems", "tasks"):
-        return view_section(repo, path, view)
-    if view == "all":
-        return view_all(repo, path)
 
 
 if __name__ == "__main__":
