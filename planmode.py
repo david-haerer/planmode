@@ -10,7 +10,15 @@ from pydantic import BaseModel, Field
 
 
 def slug(txt: str) -> str:
-    return txt.lower().replace(" ", "-").replace(".", "-")
+    return (
+        txt
+        .lower()
+        .replace(" ", "-")
+        .replace(".", "-")
+        .replace("/", "-")
+        .replace(":", "-")
+        .strip("-")
+    )
 
 
 REPOS: dict[str, Path] = {
@@ -47,7 +55,7 @@ class Item(BaseModel):
         md = md.strip()
         if not md:
             return []
-        assert md.startswith("- "), f"Text is not a nested list!\n{md}"
+        assert md.startswith("- "), f"Text is not a nested list!\n{md}\n{parent}"
         md = "\n" + md
         items: list[Item] = []
         for i, item_md in enumerate(md.split("\n- ")[1:]):
@@ -65,38 +73,44 @@ class Item(BaseModel):
         return items
 
     def to_html(self, href: str):
-        text = ""
+        html = []
         in_code = False
-        for char in self.name:
-            if char != "`":
-                text += char
-                continue
-            if char == "`" and not in_code:
-                text += "<code>"
+        for part in self.name.split("`"):
+            if not in_code:
+                html += [fh.Span(part)]
                 in_code = True
                 continue
-            if char == "`" and in_code:
-                text += "</code>"
+            if in_code:
+                html += [fh.Code(part)]
                 in_code = False
                 continue
 
-        if " [http" in text and text.endswith("]"):
-            parts = text.split(" [http")
-            text = fh.A(parts[0], href="http" + parts[1][:-1], cls="text-blue-500")
+        print(html)
+        if " [http" in str(html[-1]) and str(html[-1]).endswith("]</span>"):
+            parts = str(html[-1])[len("<span>") :].split(" [http")
+            html[-1] = parts[0]
+            html = [
+                fh.A(
+                    *html,
+                    href="http" + parts[1][: -len("]</span>")],
+                    cls="text-blue-500",
+                )
+            ]
+
         return fh.Div(
             fh.Div(
                 Del(href, f"{self.spec}"),
                 fh.Nbsp(),
-                fh.Span(text, cls="w-full"),
+                fh.Span(*html, cls="w-full"),
                 Add(href, f"{self.spec}.items"),
                 cls="flex",
             ),
             fh.Div(
                 *[i.to_html(href) for i in self.items],
                 cls="pl-6",
-                id=slug(f"{self.spec}.items"),
+                id=slug(f"{href}:{self.spec}.items"),
             ),
-            id=slug(f"{self.spec}"),
+            id=slug(f"{href}:{self.spec}"),
         )
 
 
@@ -133,39 +147,24 @@ class Section(BaseModel):
         section.items = Item.from_md(md_section(md, f"## {section.title}"), section)
         return section
 
-    def to_html(self):
-        # def PMSubSection(
-        #     repo: str, current_path: Path, plan: Plan, section: Section, index=0
-        # ):
-        #     if not plan.plans and not section.items:
-        #         return None
-        #     h = (
-        #         [mui.H3, mui.H4, mui.H5, mui.H6][index](
-        #             fh.A(plan.name, href=f"/{repo}/{plan.path}?section=plan"),
-        #             cls="pt-4",
-        #         )
-        #         if plan.path != current_path
-        #         else None
-        #     )
-        #     return mui.Section(
-        #         h,
-        #         self.to_html(view),
-        #         *[
-        #             PMSubSection(repo, current_path, p, section, index + 1)
-        #             for p in plan.plans
-        #         ],
-        #     )
+    def items_to_html(self):
+        return fh.Div(
+            *[i.to_html(self.href) for i in self.items],
+            id=slug(f"{self.href}-{self.spec}-items"),
+        )
 
+    def to_html(self, view):
+        query = "" if view == self.spec else f"?view={self.spec}"
         return mui.Section(
-            mui.H2(
-                fh.A(self.title, href=f"{self.href}#{self.spec}", cls="w-full"),
+            fh.Header(
+                mui.H2(
+                    fh.A(self.title, href=f"{self.href}{query}#{self.spec}"),
+                    cls="w-full",
+                ),
                 Add(self.href, f"{self.spec}.items"),
-                cls="flex pt-6 pb-3",
+                cls="flex pt-6 pb-3 items-end",
             ),
-            fh.Div(
-                *[i.to_html(self.href) for i in self.items],
-                id=slug(f"{self.spec}.items"),
-            ),
+            self.items_to_html(),
             id=self.spec,
         )
 
@@ -193,12 +192,16 @@ class Tasks(Section):
 class Plan(BaseModel):
     repo: str
     path: Path
+    href: str
     name: str
     plans: list[Plan] = Field(default_factory=list)
     goals: Goals
     status: Status
     problems: Problems
     tasks: Tasks
+
+    def __getitem__(self, key: str):
+        return getattr(self, key)
 
     def to_md(self):
         return "\n".join([
@@ -246,6 +249,7 @@ class Plan(BaseModel):
         plan = Plan(
             repo=repo,
             path=path,
+            href=href,
             name=name,
             goals=Goals.from_md(href=href, md=md),
             status=Status.from_md(href=href, md=md),
@@ -261,24 +265,32 @@ def body(*args, current_path="/", current_view=""):
         mui.Container(
             fh.Nav(
                 fh.Ul(
-                    fh.Li(fh.A("/", href="/")),
-                    fh.Li(fh.A("..", href=f"{current_path}/..")),
+                    fh.Li(fh.A("[ / ]", href="/", cls="text-teal-600")),
+                    fh.Li(
+                        fh.A("[ .. ]", href=f"{current_path}/..", cls="text-teal-600")
+                    ),
                     *[
-                        fh.Li(fh.A(p.name, href=f"/{p.repo}"))
+                        fh.Li(fh.A(p.name, href=f"/{p.repo}", cls="text-teal-600"))
                         for p in [Plan.from_path(r, Path(".")) for r in REPOS]
                     ],
                 )
             ),
-            fh.Main(*args),
+            fh.Main(*args, cls="flex-1"),
+            fh.Footer("PlanMode", cls="text-gray-600 py-2 text-center"),
+            cls="min-h-screen flex flex-col",
         ),
     )
+
+
+def get_section(spec):
+    return spec.split(".")[0]
 
 
 def Add(href: str, spec: str):
     return fh.A(
         "[+]",
         hx_get=f"{href}?spec={spec}",
-        hx_target=f"#{slug(spec)}",
+        hx_target=f"#{slug(href)}-{slug(spec)}",
         hx_swap="beforeend",
         cls="text-green-700",
     )
@@ -288,7 +300,8 @@ def Del(href: str, spec):
     return fh.A(
         "[×]",
         hx_delete=f"{href}?spec={spec}",
-        hx_target=f"#{slug(spec)}",
+        hx_target=f"#{slug(href)}-{get_section(spec)}-items",
+        hx_confirm="Are you sure?",
         cls="font-bold text-red-800",
     )
 
@@ -298,21 +311,24 @@ def delete(repo: str, path: Path, spec: str):
     plan = Plan.from_path(repo, path)
     glom.delete(plan, spec)
     plan.write()
-    return None
-    # return render_plan(repo, path)
+    plan = Plan.from_path(repo, path)
+    section = plan[get_section(spec)]
+    return section.items_to_html()
 
 
 @rt("/{repo:str}/{path:path}")
 def post(repo: str, path: Path, spec: str, name: str):
     plan = Plan.from_path(repo, path)
-    section: Section = getattr(plan, spec.split(".")[0])
+    section: Section = plan[get_section(spec)]
     parent: Section | Item = glom.glom(plan, spec[: -len(".items")])
     items = parent.items
+    print(name)
     items.append(
         Item(parent=parent, name=name, spec=f"{parent.spec}.items.{len(items)}")
     )
     plan.write()
-    return section.to_html()
+    plan = Plan.from_path(repo, path)
+    return section.items_to_html()
 
 
 @rt("/{repo:str}/{path:path}")
@@ -320,13 +336,16 @@ def get(repo: str, path: Path, view: str | None = None, spec: str | None = None)
     plan = Plan.from_path(repo, path)
     if spec is None:
         return render_plan(plan, view)
-    section = getattr(plan, spec.split(".")[0])
 
-    return fh.Form(
-        mui.Input(id="name", name="name", type="text"),
-        mui.Button("Add", type="submit"),
-        hx_post=f"/{repo}/{path}?spec={spec}",
-        hx_target=f"#{section.spec}",
+    section = plan[get_section(spec)]
+    return mui.Input(
+        name="name",
+        type="text",
+        placeholder="Press Enter to add...",
+        hx_post=f"{plan.href}?spec={spec}",
+        hx_target=f"#{slug(plan.href)}-{section.spec}-items",
+        hx_trigger="keydown[key=='Enter']",
+        cls="px-2 py-1",
     )
 
 
@@ -334,18 +353,45 @@ def render_plan(plan: Plan, view: str | None = None):
     repo = plan.repo
     path = plan.path
 
+    def PMSubSection(plan: Plan, section_spec: str, index=0):
+        section = plan[section_spec]
+        sub = [PMSubSection(p, section_spec, index + 1) for p in plan.plans]
+
+        if not any(sub) and not section.items:
+            return None
+
+        return mui.Section(
+            fh.Header(
+                [mui.H3, mui.H4, mui.H5, mui.H6][index](
+                    fh.A(plan.name, href=f"{plan.href}?section=plan"),
+                    cls="w-full",
+                ),
+                Add(plan.href, f"{section_spec}.items"),
+                cls="flex pt-4 items-end",
+            ),
+            section.items_to_html(),
+            *sub,
+        )
+
     return body(
         mui.H1(plan.name),
         mui.Section(
             fh.Ul(
-                *[fh.Li(fh.A(p.name, href=f"/{repo}/{p.path}")) for p in plan.plans],
+                *[
+                    fh.Li(fh.A(p.name, href=f"/{repo}/{p.path}", cls="text-teal-600"))
+                    for p in plan.plans
+                ],
                 cls="list-none pl-6",
             ),
         ),
-        plan.goals.to_html(),
-        plan.status.to_html(),
-        plan.problems.to_html(),
-        plan.tasks.to_html(),
+        plan.goals.to_html(view),
+        *[PMSubSection(p, "goals") for p in plan.plans if view == "goals"],
+        plan.status.to_html(view),
+        *[PMSubSection(p, "status") for p in plan.plans if view == "status"],
+        plan.problems.to_html(view),
+        *[PMSubSection(p, "problems") for p in plan.plans if view == "problems"],
+        plan.tasks.to_html(view),
+        *[PMSubSection(p, "tasks") for p in plan.plans if view == "tasks"],
         current_path=f"/{repo}/{path}",
         current_view=view,
     )
