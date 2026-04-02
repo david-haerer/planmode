@@ -85,7 +85,6 @@ class Item(BaseModel):
                 in_code = False
                 continue
 
-        print(html)
         if " [http" in str(html[-1]) and str(html[-1]).endswith("]</span>"):
             parts = str(html[-1])[len("<span>") :].split(" [http")
             html[-1] = parts[0]
@@ -99,7 +98,7 @@ class Item(BaseModel):
 
         return fh.Div(
             fh.Div(
-                Del(href, f"{self.spec}"),
+                Del(href, f"{self.spec}", self.name),
                 fh.Nbsp(),
                 fh.Span(*html, cls="w-full"),
                 Add(href, f"{self.spec}.items"),
@@ -108,9 +107,9 @@ class Item(BaseModel):
             fh.Div(
                 *[i.to_html(href) for i in self.items],
                 cls="pl-6",
-                id=slug(f"{href}:{self.spec}.items"),
+                id=slug(f"{href}-{self.spec}-items"),
             ),
-            id=slug(f"{href}:{self.spec}"),
+            id=slug(f"{href}-{self.spec}"),
         )
 
 
@@ -245,7 +244,10 @@ class Plan(BaseModel):
             f"Unable to determine project name! {repo=}, {path=}"
         )
         name, md = md[2:].split("\n", maxsplit=1)
-        href = f"/{repo}/{path}"
+        href = f"/{repo}/{path}" if path == Path(".") else f"/{repo}"
+        if href.endswith("/."):
+            href = href[:-2]
+        print(href)
         plan = Plan(
             repo=repo,
             path=path,
@@ -257,6 +259,48 @@ class Plan(BaseModel):
             tasks=Tasks.from_md(href=href, md=md),
         )
         return plan
+
+    def to_html(self, view: str | None = None):
+        def Sub(plan: Plan, section_spec: str, index=0):
+            section = plan[section_spec]
+            sub = [Sub(p, section_spec, index + 1) for p in plan.plans]
+
+            if not any(sub) and not section.items:
+                return None
+
+            return mui.Section(
+                fh.Header(
+                    [mui.H3, mui.H4, mui.H5, mui.H6][index](
+                        fh.A(plan.name, href=f"{plan.href}?section=plan"),
+                        cls="w-full",
+                    ),
+                    Add(plan.href, f"{section_spec}.items"),
+                    cls="flex pt-4 items-end",
+                ),
+                section.items_to_html(),
+                *sub,
+            )
+
+        return (
+            mui.H1(self.name),
+            mui.Section(
+                fh.Ul(
+                    *[
+                        fh.Li(fh.A(p.name, href=p.href, cls="text-teal-600"))
+                        for p in self.plans
+                    ],
+                    cls="list-none pl-6",
+                ),
+            ),
+            self.goals.to_html(view),
+            *[Sub(p, "goals") for p in self.plans if view == "goals"],
+            self.status.to_html(view),
+            *[Sub(p, "status") for p in self.plans if view == "status"],
+            self.problems.to_html(view),
+            *[Sub(p, "problems") for p in self.plans if view == "problems"],
+            self.tasks.to_html(view),
+            *[Sub(p, "tasks") for p in self.plans if view == "tasks"],
+        )
 
 
 def body(*args, current_path="/", current_view=""):
@@ -296,12 +340,12 @@ def Add(href: str, spec: str):
     )
 
 
-def Del(href: str, spec):
+def Del(href: str, spec: str, value: str):
     return fh.A(
         "[×]",
         hx_delete=f"{href}?spec={spec}",
         hx_target=f"#{slug(href)}-{get_section(spec)}-items",
-        hx_confirm="Are you sure?",
+        hx_confirm=f"Delete '{value}'?",
         cls="font-bold text-red-800",
     )
 
@@ -335,7 +379,7 @@ def post(repo: str, path: Path, spec: str, name: str):
 def get(repo: str, path: Path, view: str | None = None, spec: str | None = None):
     plan = Plan.from_path(repo, path)
     if spec is None:
-        return render_plan(plan, view)
+        return body(plan.to_html(), current_path=f"/{repo}/{path}", current_view=view)
 
     section = plan[get_section(spec)]
     return mui.Input(
@@ -346,54 +390,6 @@ def get(repo: str, path: Path, view: str | None = None, spec: str | None = None)
         hx_target=f"#{slug(plan.href)}-{section.spec}-items",
         hx_trigger="keydown[key=='Enter']",
         cls="px-2 py-1",
-    )
-
-
-def render_plan(plan: Plan, view: str | None = None):
-    repo = plan.repo
-    path = plan.path
-
-    def PMSubSection(plan: Plan, section_spec: str, index=0):
-        section = plan[section_spec]
-        sub = [PMSubSection(p, section_spec, index + 1) for p in plan.plans]
-
-        if not any(sub) and not section.items:
-            return None
-
-        return mui.Section(
-            fh.Header(
-                [mui.H3, mui.H4, mui.H5, mui.H6][index](
-                    fh.A(plan.name, href=f"{plan.href}?section=plan"),
-                    cls="w-full",
-                ),
-                Add(plan.href, f"{section_spec}.items"),
-                cls="flex pt-4 items-end",
-            ),
-            section.items_to_html(),
-            *sub,
-        )
-
-    return body(
-        mui.H1(plan.name),
-        mui.Section(
-            fh.Ul(
-                *[
-                    fh.Li(fh.A(p.name, href=f"/{repo}/{p.path}", cls="text-teal-600"))
-                    for p in plan.plans
-                ],
-                cls="list-none pl-6",
-            ),
-        ),
-        plan.goals.to_html(view),
-        *[PMSubSection(p, "goals") for p in plan.plans if view == "goals"],
-        plan.status.to_html(view),
-        *[PMSubSection(p, "status") for p in plan.plans if view == "status"],
-        plan.problems.to_html(view),
-        *[PMSubSection(p, "problems") for p in plan.plans if view == "problems"],
-        plan.tasks.to_html(view),
-        *[PMSubSection(p, "tasks") for p in plan.plans if view == "tasks"],
-        current_path=f"/{repo}/{path}",
-        current_view=view,
     )
 
 
