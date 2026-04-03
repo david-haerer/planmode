@@ -25,14 +25,6 @@ REPOS: dict[str, Path] = {
     slug((path / "index.md").read_text().split("\n")[0][2:]): path
     for path in map(Path, os.getenv("REPOS", "").split(":"))
 }
-
-TITLE = {
-    "goals": "Goals",
-    "status": "Status",
-    "problems": "Problems",
-    "tasks": "Tasks",
-}
-
 DEBUG = False
 app, rt = fh.fast_app(hdrs=mui.Theme.blue.headers(), live=DEBUG, debug=DEBUG)
 
@@ -244,10 +236,7 @@ class Plan(BaseModel):
             f"Unable to determine project name! {repo=}, {path=}"
         )
         name, md = md[2:].split("\n", maxsplit=1)
-        href = f"/{repo}/{path}" if path == Path(".") else f"/{repo}"
-        if href.endswith("/."):
-            href = href[:-2]
-        print(href)
+        href = f"/{repo}/{path}" if path != Path(".") else f"/{repo}"
         plan = Plan(
             repo=repo,
             path=path,
@@ -281,8 +270,9 @@ class Plan(BaseModel):
                 *sub,
             )
 
+        query = "?view=plans" if view != "plans" else ""
         return (
-            mui.H1(self.name),
+            mui.H1(fh.A(self.name, href=f"{self.href}{query}")),
             mui.Section(
                 fh.Ul(
                     *[
@@ -293,26 +283,24 @@ class Plan(BaseModel):
                 ),
             ),
             self.goals.to_html(view),
-            *[Sub(p, "goals") for p in self.plans if view == "goals"],
+            *[Sub(p, "goals") for p in self.plans if view in ("plans", "goals")],
             self.status.to_html(view),
-            *[Sub(p, "status") for p in self.plans if view == "status"],
+            *[Sub(p, "status") for p in self.plans if view in ("plans", "status")],
             self.problems.to_html(view),
-            *[Sub(p, "problems") for p in self.plans if view == "problems"],
+            *[Sub(p, "problems") for p in self.plans if view in ("plans", "problems")],
             self.tasks.to_html(view),
-            *[Sub(p, "tasks") for p in self.plans if view == "tasks"],
+            *[Sub(p, "tasks") for p in self.plans if view in ("plans", "tasks")],
         )
 
 
-def body(*args, current_path="/", current_view=""):
+def body(*args, href="/"):
     return fh.Body(
         fh.Style("html { scrollbar-gutter: stable; }"),
         mui.Container(
             fh.Nav(
                 fh.Ul(
                     fh.Li(fh.A("[ / ]", href="/", cls="text-teal-600")),
-                    fh.Li(
-                        fh.A("[ .. ]", href=f"{current_path}/..", cls="text-teal-600")
-                    ),
+                    fh.Li(fh.A("[ .. ]", href=f"{href}/..", cls="text-teal-600")),
                     *[
                         fh.Li(fh.A(p.name, href=f"/{p.repo}", cls="text-teal-600"))
                         for p in [Plan.from_path(r, Path(".")) for r in REPOS]
@@ -320,7 +308,7 @@ def body(*args, current_path="/", current_view=""):
                 )
             ),
             fh.Main(*args, cls="flex-1"),
-            fh.Footer("PlanMode", cls="text-gray-600 py-2 text-center"),
+            fh.Footer("", cls="text-gray-600 py-2 text-center"),
             cls="min-h-screen flex flex-col",
         ),
     )
@@ -366,7 +354,6 @@ def post(repo: str, path: Path, spec: str, name: str):
     section: Section = plan[get_section(spec)]
     parent: Section | Item = glom.glom(plan, spec[: -len(".items")])
     items = parent.items
-    print(name)
     items.append(
         Item(parent=parent, name=name, spec=f"{parent.spec}.items.{len(items)}")
     )
@@ -379,7 +366,7 @@ def post(repo: str, path: Path, spec: str, name: str):
 def get(repo: str, path: Path, view: str | None = None, spec: str | None = None):
     plan = Plan.from_path(repo, path)
     if spec is None:
-        return body(plan.to_html(), current_path=f"/{repo}/{path}", current_view=view)
+        return body(plan.to_html(view=view), href=plan.href)
 
     section = plan[get_section(spec)]
     return mui.Input(
@@ -397,13 +384,20 @@ def get(repo: str, path: Path, view: str | None = None, spec: str | None = None)
 def get(view: str = ""):
     def Plans(plans: list[Plan]):
         return fh.Ul(
-            fh.Li(fh.A(p.name, href=f"/{p.repo}/{p.path}"), Plans(p.plans))
-            for p in plans
+            *[
+                fh.Li(
+                    fh.A(p.name, href=f"/{p.repo}/{p.path}", cls="text-teal-600"),
+                    Plans(p.plans),
+                )
+                for p in plans
+            ],
+            cls="pl-6",
         )
 
     def Repo(plan):
         return mui.Section(
-            mui.H2(fh.A(plan.name, href=f"/{plan.repo}")), Plans(plan.plans)
+            mui.H2(fh.A(plan.name, href=f"/{plan.repo}"), cls="pt-4 pb-2"),
+            Plans(plan.plans),
         )
 
     plans = [Plan.from_path(name, Path(".")) for name, path in REPOS.items()]
